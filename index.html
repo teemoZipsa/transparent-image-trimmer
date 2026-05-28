@@ -985,27 +985,6 @@
       ]);
     }
 
-    function createCombinedCanvas(items) {
-      const gap = items.length > 1 ? 24 : 0;
-      const width = Math.max(...items.map((item) => item.trimmedCanvas.width));
-      const height = items.reduce((sum, item) => sum + item.trimmedCanvas.height, 0) + gap * (items.length - 1);
-      const canvas = document.createElement("canvas");
-      let y = 0;
-
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, width, height);
-
-      items.forEach((item) => {
-        const x = Math.floor((width - item.trimmedCanvas.width) / 2);
-        ctx.drawImage(item.trimmedCanvas, x, y);
-        y += item.trimmedCanvas.height + gap;
-      });
-
-      return canvas;
-    }
-
     function canvasToBase64Png(canvas) {
       return canvas
         .toDataURL("image/png")
@@ -1018,16 +997,40 @@
       if (!validItems.length) return;
 
       try {
-        const canvas = validItems.length === 1
-          ? validItems[0].trimmedCanvas
-          : createCombinedCanvas(validItems);
+        const clipboardItems = await Promise.all(validItems.map(async (item) => {
+          const blob = await canvasToBlob(item.trimmedCanvas);
+          return new ClipboardItem({ "image/png": blob });
+        }));
 
-        await copyCanvasToClipboard(canvas);
-        const suffix = validItems.length === 1 ? "1장의 결과 이미지를" : `${validItems.length}장의 결과 이미지를 한 장으로 합쳐`;
-        setStatus(`${suffix} 클립보드에 복사했습니다.`);
+        await navigator.clipboard.write(clipboardItems);
+        setStatus(`${validItems.length}장의 결과 이미지를 클립보드에 복사했습니다.`);
       } catch {
-        setStatus("브라우저가 이미지 클립보드 복사를 허용하지 않았습니다.", true);
+        const message = validItems.length > 1
+          ? "여러 이미지 동시 복사를 지원하지 않습니다. 모두 PPT에 넣기를 사용해보세요."
+          : "브라우저가 이미지 클립보드 복사를 허용하지 않았습니다.";
+        setStatus(message, true);
       }
+    }
+
+    async function addPictureToSelectedSlide(base64Image) {
+      if (!window.PowerPoint || !PowerPoint.run) {
+        throw new Error("PowerPoint 그림 추가 API를 사용할 수 없습니다.");
+      }
+
+      await PowerPoint.run(async (context) => {
+        const selectedSlide = context.presentation.getSelectedSlides().getItemAt(0);
+
+        if (!selectedSlide.shapes || typeof selectedSlide.shapes.addPicture !== "function") {
+          throw new Error("PowerPoint 그림 추가 API를 사용할 수 없습니다.");
+        }
+
+        selectedSlide.shapes.addPicture(base64Image, {
+          left: 36,
+          top: 36
+        });
+
+        await context.sync();
+      });
     }
 
     function insertImageBase64IntoPowerPoint(base64Image) {
@@ -1047,6 +1050,18 @@
       });
     }
 
+    async function insertNewImageIntoPowerPoint(base64Image, allowSelectionFallback = true) {
+      try {
+        await addPictureToSelectedSlide(base64Image);
+      } catch {
+        if (!allowSelectionFallback) {
+          throw new Error("PowerPoint에서 여러 장 개별 삽입 API를 사용할 수 없습니다.");
+        }
+
+        await insertImageBase64IntoPowerPoint(base64Image);
+      }
+    }
+
     async function insertItemIntoPowerPoint(item) {
       if (!isPowerPointReady || !item.valid) return;
 
@@ -1057,7 +1072,7 @@
 
         const base64Image = canvasToBase64Png(item.trimmedCanvas);
 
-        await insertImageBase64IntoPowerPoint(base64Image);
+        await insertNewImageIntoPowerPoint(base64Image);
         setStatus(`${item.fileName} 결과 이미지를 현재 슬라이드에 넣었습니다.`);
       } catch (error) {
         const message = error && error.message ? error.message : "PowerPoint 삽입에 실패했습니다.";
@@ -1079,15 +1094,13 @@
         validItems.forEach((item) => {
           item.insertButton.disabled = true;
         });
-        const canvas = validItems.length === 1
-          ? validItems[0].trimmedCanvas
-          : createCombinedCanvas(validItems);
-        const suffix = validItems.length === 1 ? "1장의 결과 이미지를" : `${validItems.length}장의 결과 이미지를 한 장으로 합쳐`;
+        setStatus(`${validItems.length}장의 결과 이미지를 PowerPoint에 넣는 중입니다.`);
 
-        setStatus(`${suffix} PowerPoint에 넣는 중입니다.`);
-        await insertImageBase64IntoPowerPoint(canvasToBase64Png(canvas));
+        for (const item of validItems) {
+          await insertNewImageIntoPowerPoint(canvasToBase64Png(item.trimmedCanvas), false);
+        }
 
-        setStatus(`${suffix} 현재 슬라이드에 넣었습니다.`);
+        setStatus(`${validItems.length}장의 결과 이미지를 현재 슬라이드에 넣었습니다.`);
       } catch (error) {
         const message = error && error.message ? error.message : "PowerPoint 삽입에 실패했습니다.";
         setStatus(message, true);
