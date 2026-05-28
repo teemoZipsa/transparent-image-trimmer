@@ -153,6 +153,11 @@
       transform: translateY(-2px);
     }
 
+    .drop-zone:focus-visible {
+      outline: 3px solid rgba(22, 122, 109, .28);
+      outline-offset: 3px;
+    }
+
     .drop-zone strong {
       display: block;
       font-size: 22px;
@@ -431,10 +436,10 @@
 
     <section class="layout">
       <aside>
-        <div class="drop-zone" id="dropZone">
+        <div class="drop-zone" id="dropZone" tabindex="0">
           <div>
             <strong>이미지를 여기에 놓기</strong>
-            <span>여러 장을 한 번에 놓아도 각각 계산합니다.</span>
+            <span>여러 장을 한 번에 놓거나, PPT에서 복사한 뒤 여기를 눌러 Ctrl+V 하세요.</span>
           </div>
         </div>
 
@@ -752,6 +757,26 @@
       trimImages();
     }
 
+    function getImageFilesFromClipboard(event) {
+      const items = Array.from(event.clipboardData?.items || []);
+
+      return items
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+    }
+
+    function pasteClipboardImages(event) {
+      const files = getImageFilesFromClipboard(event);
+
+      if (!files.length) {
+        return;
+      }
+
+      event.preventDefault();
+      loadFiles(files);
+    }
+
     function getDownloadName(fileName, index = 0) {
       if (!downloadOriginalName.checked) {
         return imageItems.length > 1 ? `trimmed-image-${index + 1}.png` : "trimmed-image.png";
@@ -873,7 +898,7 @@
         updatePowerPointButtons();
 
         if (isPowerPointReady && !imageItems.length) {
-          setStatus("이미지를 드래그하면 여백 제거 후 현재 슬라이드에 넣을 수 있습니다.");
+          setStatus("이미지를 드래그하거나 PPT에서 복사 후 Ctrl+V 하면 여백 제거 후 현재 슬라이드에 넣을 수 있습니다.");
         }
       });
     }
@@ -896,6 +921,9 @@
       dropZone.classList.remove("dragging");
       loadFiles(event.dataTransfer.files);
     });
+
+    dropZone.addEventListener("paste", pasteClipboardImages);
+    document.addEventListener("paste", pasteClipboardImages);
 
     threshold.addEventListener("input", () => {
       thresholdValue.textContent = threshold.value;

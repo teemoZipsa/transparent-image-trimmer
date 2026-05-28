@@ -38,4 +38,4 @@ This repo also includes a local PowerPoint task pane add-in manifest.
 
 4. Sideload `manifest.xml` into PowerPoint.
 
-The add-in opens the same trimmer UI in a task pane. Drop an image into the pane, then use `PPT에 넣기` to insert the trimmed PNG into the current slide.
+The add-in opens the same trimmer UI in a task pane. Drop an image into the pane, or copy a selected image in PowerPoint and paste it into the pane with Ctrl+V. Then use `PPT에 넣기` to insert the trimmed PNG into the current slide.
