@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>투명 여백 자동 제거</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <style>
     :root {
       color-scheme: light;
@@ -472,6 +473,7 @@
 
         <div class="actions">
           <button class="secondary" id="copyButton" type="button" disabled>첫 결과 복사</button>
+          <button class="secondary office-only" id="insertPptButton" type="button" hidden disabled>첫 결과 PPT에 넣기</button>
           <button id="downloadButton" type="button" disabled>모두 PNG 다운로드</button>
         </div>
       </section>
@@ -484,6 +486,7 @@
     const resetButton = document.querySelector("#resetButton");
     const downloadButton = document.querySelector("#downloadButton");
     const copyButton = document.querySelector("#copyButton");
+    const insertPptButton = document.querySelector("#insertPptButton");
     const threshold = document.querySelector("#threshold");
     const thresholdValue = document.querySelector("#thresholdValue");
     const padding = document.querySelector("#padding");
@@ -494,6 +497,7 @@
     const downloadOriginalName = document.querySelector("#downloadOriginalName");
 
     let imageItems = [];
+    let isPowerPointReady = false;
 
     function setStatus(message, isError = false) {
       status.textContent = message;
@@ -544,6 +548,7 @@
           <div class="result-name" title=""></div>
           <div class="result-actions">
             <button class="secondary copy-one" type="button">복사</button>
+            <button class="secondary office-only insert-one" type="button" hidden>PPT에 넣기</button>
             <button class="download-one" type="button">다운로드</button>
           </div>
         </div>
@@ -630,6 +635,24 @@
       item.copyButton.disabled = !navigator.clipboard || !window.ClipboardItem;
     }
 
+    function setPowerPointControlsVisible(isVisible) {
+      document.querySelectorAll(".office-only").forEach((element) => {
+        element.hidden = !isVisible;
+      });
+    }
+
+    function updatePowerPointButtons() {
+      const hasValidImage = imageItems.some((item) => item.valid);
+      insertPptButton.disabled = !isPowerPointReady || !hasValidImage;
+
+      imageItems.forEach((item) => {
+        if (item.insertButton) {
+          item.insertButton.hidden = !isPowerPointReady;
+          item.insertButton.disabled = !isPowerPointReady || !item.valid;
+        }
+      });
+    }
+
     function trimImages() {
       if (!imageItems.length) return;
 
@@ -640,12 +663,14 @@
         setStatus("불투명 픽셀이 있는 이미지가 없습니다. 투명도 기준을 낮춰보세요.", true);
         downloadButton.disabled = true;
         copyButton.disabled = true;
+        updatePowerPointButtons();
         return;
       }
 
       setStatus(`${validCount}장의 이미지 처리가 완료됐습니다.`);
       downloadButton.disabled = false;
       copyButton.disabled = !navigator.clipboard || !window.ClipboardItem;
+      updatePowerPointButtons();
     }
 
     function loadImage(file) {
@@ -691,6 +716,7 @@
       resetButton.disabled = false;
       downloadButton.disabled = true;
       copyButton.disabled = true;
+      insertPptButton.disabled = true;
       setStatus(`${files.length}장의 이미지를 읽는 중입니다.`);
 
       const loadedItems = await Promise.all(files.map(loadImage));
@@ -706,11 +732,13 @@
           trimmedMeta: element.querySelector(".trimmed-meta"),
           downloadButton: element.querySelector(".download-one"),
           copyButton: element.querySelector(".copy-one"),
+          insertButton: element.querySelector(".insert-one"),
           valid: false
         };
 
         item.downloadButton.addEventListener("click", () => downloadItem(item));
         item.copyButton.addEventListener("click", () => copyItem(item));
+        item.insertButton.addEventListener("click", () => insertItemIntoPowerPoint(item));
         imageItems.push(item);
         resultList.append(element);
       });
@@ -774,6 +802,52 @@
       }
     }
 
+    function insertImageBase64IntoPowerPoint(base64Image) {
+      return new Promise((resolve, reject) => {
+        Office.context.document.setSelectedDataAsync(
+          base64Image,
+          { coercionType: Office.CoercionType.Image },
+          (result) => {
+            if (result.status === Office.AsyncResultStatus.Failed) {
+              reject(result.error);
+              return;
+            }
+
+            resolve();
+          }
+        );
+      });
+    }
+
+    async function insertItemIntoPowerPoint(item) {
+      if (!isPowerPointReady || !item.valid) return;
+
+      try {
+        insertPptButton.disabled = true;
+        item.insertButton.disabled = true;
+        setStatus(`${item.fileName} 결과 이미지를 PowerPoint에 넣는 중입니다.`);
+
+        const base64Image = item.trimmedCanvas
+          .toDataURL("image/png")
+          .replace(/^data:image\/png;base64,/, "");
+
+        await insertImageBase64IntoPowerPoint(base64Image);
+        setStatus(`${item.fileName} 결과 이미지를 현재 슬라이드에 넣었습니다.`);
+      } catch (error) {
+        const message = error && error.message ? error.message : "PowerPoint 삽입에 실패했습니다.";
+        setStatus(message, true);
+      } finally {
+        updatePowerPointButtons();
+      }
+    }
+
+    function insertFirstImageIntoPowerPoint() {
+      const firstValidItem = imageItems.find((item) => item.valid);
+      if (firstValidItem) {
+        insertItemIntoPowerPoint(firstValidItem);
+      }
+    }
+
     function resetApp() {
       revokeItems();
       imageItems = [];
@@ -784,7 +858,24 @@
       resetButton.disabled = true;
       downloadButton.disabled = true;
       copyButton.disabled = true;
+      insertPptButton.disabled = true;
       setStatus("아직 이미지가 없습니다.");
+    }
+
+    function initializePowerPointIntegration() {
+      if (!window.Office || !Office.onReady) {
+        return;
+      }
+
+      Office.onReady((info) => {
+        isPowerPointReady = info.host === Office.HostType.PowerPoint;
+        setPowerPointControlsVisible(isPowerPointReady);
+        updatePowerPointButtons();
+
+        if (isPowerPointReady && !imageItems.length) {
+          setStatus("이미지를 드래그하면 여백 제거 후 현재 슬라이드에 넣을 수 있습니다.");
+        }
+      });
     }
 
     fileInput.addEventListener("change", () => {
@@ -818,7 +909,9 @@
 
     downloadButton.addEventListener("click", downloadAllImages);
     copyButton.addEventListener("click", copyFirstImage);
+    insertPptButton.addEventListener("click", insertFirstImageIntoPowerPoint);
     resetButton.addEventListener("click", resetApp);
+    initializePowerPointIntegration();
   </script>
 </body>
 </html>

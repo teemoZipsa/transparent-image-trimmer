@@ -1,0 +1,16 @@
+{
+  "name": "transparent-image-trimmer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "certs": "office-addin-dev-certs install",
+    "dev": "vite --host localhost --port 3000",
+    "validate": "office-addin-manifest validate manifest.xml"
+  },
+  "devDependencies": {
+    "office-addin-dev-certs": "^2.0.9",
+    "office-addin-manifest": "^2.1.5",
+    "vite": "^8.0.14"
+  }
+}
