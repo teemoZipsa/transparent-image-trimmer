@@ -618,7 +618,7 @@
 
         <div class="actions">
           <button class="secondary" id="copyButton" type="button" disabled>첫 결과 복사</button>
-          <button class="secondary office-only" id="insertPptButton" type="button" hidden disabled>첫 결과 PPT에 넣기</button>
+          <button class="secondary office-only" id="insertPptButton" type="button" hidden disabled>PPT에 넣기</button>
           <button id="downloadButton" type="button" disabled>모두 PNG 다운로드</button>
         </div>
       </section>
@@ -903,11 +903,11 @@
 
     function getImageFilesFromClipboard(event) {
       const items = Array.from(event.clipboardData?.items || []);
+      const imageItems = items.filter((item) => item.kind === "file" && item.type.startsWith("image/"));
+      const preferredItem = imageItems.find((item) => item.type === "image/png") || imageItems[0];
+      const file = preferredItem?.getAsFile();
 
-      return items
-        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-        .map((item) => item.getAsFile())
-        .filter(Boolean);
+      return file ? [file] : [];
     }
 
     function pasteClipboardImages(event) {
@@ -918,6 +918,7 @@
       }
 
       event.preventDefault();
+      event.stopPropagation();
       loadFiles(files);
     }
 
@@ -1045,6 +1046,7 @@
         if (isPowerPointReady) {
           subtitle.textContent = "PPT에서 복사한 이미지의 투명 여백을 제거합니다.";
           fileButton.textContent = "파일 선택";
+          insertPptButton.textContent = "PPT에 넣기";
           dropZoneTitle.textContent = "복사한 이미지 붙여넣기";
           dropZoneHelp.innerHTML = "PPT에서 그림을 선택하고 <kbd>Ctrl+C</kbd>, 이 영역을 누른 뒤 <kbd>Ctrl+V</kbd>";
 
@@ -1074,7 +1076,6 @@
       loadFiles(event.dataTransfer.files);
     });
 
-    dropZone.addEventListener("paste", pasteClipboardImages);
     document.addEventListener("paste", pasteClipboardImages);
 
     threshold.addEventListener("input", () => {
