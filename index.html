@@ -617,8 +617,8 @@
         <div class="result-list" id="resultList" hidden></div>
 
         <div class="actions">
-          <button class="secondary" id="copyButton" type="button" disabled>첫 결과 복사</button>
-          <button class="secondary office-only" id="insertPptButton" type="button" hidden disabled>PPT에 넣기</button>
+          <button class="secondary" id="copyButton" type="button" disabled>모두 복사</button>
+          <button class="secondary office-only" id="insertPptButton" type="button" hidden disabled>모두 PPT에 넣기</button>
           <button id="downloadButton" type="button" disabled>모두 PNG 다운로드</button>
         </div>
       </section>
@@ -953,22 +953,80 @@
     async function copyItem(item) {
       if (!item.valid || !navigator.clipboard || !window.ClipboardItem) return;
 
-      item.trimmedCanvas.toBlob(async (blob) => {
-        try {
-          await navigator.clipboard.write([
-            new ClipboardItem({ "image/png": blob })
-          ]);
-          setStatus(`${item.fileName} 결과 이미지를 클립보드에 복사했습니다.`);
-        } catch {
-          setStatus("브라우저가 이미지 클립보드 복사를 허용하지 않았습니다.", true);
-        }
-      }, "image/png");
+      try {
+        await copyCanvasToClipboard(item.trimmedCanvas);
+        setStatus(`${item.fileName} 결과 이미지를 클립보드에 복사했습니다.`);
+      } catch {
+        setStatus("브라우저가 이미지 클립보드 복사를 허용하지 않았습니다.", true);
+      }
     }
 
-    function copyFirstImage() {
-      const firstValidItem = imageItems.find((item) => item.valid);
-      if (firstValidItem) {
-        copyItem(firstValidItem);
+    function canvasToBlob(canvas) {
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) {
+            resolve(blob);
+            return;
+          }
+
+          reject(new Error("이미지를 만들지 못했습니다."));
+        }, "image/png");
+      });
+    }
+
+    async function copyCanvasToClipboard(canvas) {
+      if (!navigator.clipboard || !window.ClipboardItem) {
+        throw new Error("클립보드 복사를 지원하지 않습니다.");
+      }
+
+      const blob = await canvasToBlob(canvas);
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": blob })
+      ]);
+    }
+
+    function createCombinedCanvas(items) {
+      const gap = items.length > 1 ? 24 : 0;
+      const width = Math.max(...items.map((item) => item.trimmedCanvas.width));
+      const height = items.reduce((sum, item) => sum + item.trimmedCanvas.height, 0) + gap * (items.length - 1);
+      const canvas = document.createElement("canvas");
+      let y = 0;
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, width, height);
+
+      items.forEach((item) => {
+        const x = Math.floor((width - item.trimmedCanvas.width) / 2);
+        ctx.drawImage(item.trimmedCanvas, x, y);
+        y += item.trimmedCanvas.height + gap;
+      });
+
+      return canvas;
+    }
+
+    function canvasToBase64Png(canvas) {
+      return canvas
+        .toDataURL("image/png")
+        .replace(/^data:image\/png;base64,/, "");
+    }
+
+    async function copyAllImages() {
+      const validItems = imageItems.filter((item) => item.valid);
+
+      if (!validItems.length) return;
+
+      try {
+        const canvas = validItems.length === 1
+          ? validItems[0].trimmedCanvas
+          : createCombinedCanvas(validItems);
+
+        await copyCanvasToClipboard(canvas);
+        const suffix = validItems.length === 1 ? "1장의 결과 이미지를" : `${validItems.length}장의 결과 이미지를 한 장으로 합쳐`;
+        setStatus(`${suffix} 클립보드에 복사했습니다.`);
+      } catch {
+        setStatus("브라우저가 이미지 클립보드 복사를 허용하지 않았습니다.", true);
       }
     }
 
@@ -997,9 +1055,7 @@
         item.insertButton.disabled = true;
         setStatus(`${item.fileName} 결과 이미지를 PowerPoint에 넣는 중입니다.`);
 
-        const base64Image = item.trimmedCanvas
-          .toDataURL("image/png")
-          .replace(/^data:image\/png;base64,/, "");
+        const base64Image = canvasToBase64Png(item.trimmedCanvas);
 
         await insertImageBase64IntoPowerPoint(base64Image);
         setStatus(`${item.fileName} 결과 이미지를 현재 슬라이드에 넣었습니다.`);
@@ -1011,10 +1067,32 @@
       }
     }
 
-    function insertFirstImageIntoPowerPoint() {
-      const firstValidItem = imageItems.find((item) => item.valid);
-      if (firstValidItem) {
-        insertItemIntoPowerPoint(firstValidItem);
+    async function insertAllImagesIntoPowerPoint() {
+      if (!isPowerPointReady) return;
+
+      const validItems = imageItems.filter((item) => item.valid);
+
+      if (!validItems.length) return;
+
+      try {
+        insertPptButton.disabled = true;
+        validItems.forEach((item) => {
+          item.insertButton.disabled = true;
+        });
+        const canvas = validItems.length === 1
+          ? validItems[0].trimmedCanvas
+          : createCombinedCanvas(validItems);
+        const suffix = validItems.length === 1 ? "1장의 결과 이미지를" : `${validItems.length}장의 결과 이미지를 한 장으로 합쳐`;
+
+        setStatus(`${suffix} PowerPoint에 넣는 중입니다.`);
+        await insertImageBase64IntoPowerPoint(canvasToBase64Png(canvas));
+
+        setStatus(`${suffix} 현재 슬라이드에 넣었습니다.`);
+      } catch (error) {
+        const message = error && error.message ? error.message : "PowerPoint 삽입에 실패했습니다.";
+        setStatus(message, true);
+      } finally {
+        updatePowerPointButtons();
       }
     }
 
@@ -1046,7 +1124,8 @@
         if (isPowerPointReady) {
           subtitle.textContent = "PPT에서 복사한 이미지의 투명 여백을 제거합니다.";
           fileButton.textContent = "파일 선택";
-          insertPptButton.textContent = "PPT에 넣기";
+          copyButton.textContent = "모두 복사";
+          insertPptButton.textContent = "모두 PPT에 넣기";
           dropZoneTitle.textContent = "복사한 이미지 붙여넣기";
           dropZoneHelp.innerHTML = "PPT에서 그림을 선택하고 <kbd>Ctrl+C</kbd>, 이 영역을 누른 뒤 <kbd>Ctrl+V</kbd>";
 
@@ -1089,8 +1168,8 @@
     });
 
     downloadButton.addEventListener("click", downloadAllImages);
-    copyButton.addEventListener("click", copyFirstImage);
-    insertPptButton.addEventListener("click", insertFirstImageIntoPowerPoint);
+    copyButton.addEventListener("click", copyAllImages);
+    insertPptButton.addEventListener("click", insertAllImagesIntoPowerPoint);
     resetButton.addEventListener("click", resetApp);
     initializePowerPointIntegration();
   </script>
