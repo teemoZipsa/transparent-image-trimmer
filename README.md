@@ -38,4 +38,4 @@ This repo also includes a local PowerPoint task pane add-in manifest.
 
 4. Sideload `manifest.xml` into PowerPoint.
 
-The add-in opens a compact task pane UI for PowerPoint. Copy a selected image in PowerPoint, paste it into the pane with Ctrl+V, then use `모두 PPT에 넣기` to insert every trimmed result into the current slide as separate images. File selection is still available for images outside the presentation.
+The add-in opens a compact task pane UI for PowerPoint. Copy a selected image in PowerPoint, paste it into the pane with Ctrl+V, then insert every trimmed result into the current slide as separate images. File selection is still available for images outside the presentation.
