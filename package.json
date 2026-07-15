@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "certs": "office-addin-dev-certs install",
+    "build": "vite build",
     "dev": "vite --host localhost --port 3000",
+    "check": "npm test && npm run build && npm run validate",
+    "test": "node --test tests/*.test.mjs",
     "validate": "office-addin-manifest validate manifest.xml"
   },
   "devDependencies": {

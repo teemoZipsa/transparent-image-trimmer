@@ -113,6 +113,10 @@
       background: #d8e4df;
     }
 
+    button.secondary.remove-one {
+      color: var(--danger);
+    }
+
     button:disabled {
       opacity: .45;
       cursor: not-allowed;
@@ -246,11 +250,18 @@
       box-shadow: var(--shadow);
     }
 
+    .preview-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
     .status {
       min-height: 22px;
       color: var(--muted);
       font-size: 14px;
-      margin-bottom: 14px;
     }
 
     .status.error {
@@ -508,8 +519,11 @@
     }
 
     body.office-host .status {
-      margin-bottom: 10px;
       font-size: 13px;
+    }
+
+    body.office-host .preview-head {
+      margin-bottom: 10px;
     }
 
     @media (max-width: 820px) {
@@ -531,6 +545,11 @@
 
       .result-actions {
         justify-content: flex-end;
+      }
+
+      .preview-head {
+        align-items: stretch;
+        flex-direction: column;
       }
 
       .app-header {
@@ -589,7 +608,7 @@
               <label for="threshold">투명도 기준</label>
               <output id="thresholdValue" for="threshold">8</output>
             </div>
-            <input id="threshold" type="range" min="0" max="255" value="8">
+            <input id="threshold" type="range" min="0" max="254" value="8">
           </div>
 
           <div class="setting-row">
@@ -608,7 +627,10 @@
       </aside>
 
       <section class="preview">
-        <div class="status" id="status">아직 이미지가 없습니다.</div>
+        <div class="preview-head">
+          <div class="status" id="status">아직 이미지가 없습니다.</div>
+          <button id="downloadButton" type="button" aria-keyshortcuts="Control+Enter Meta+Enter" title="Ctrl+Enter" disabled>모두 PNG 다운로드</button>
+        </div>
 
         <div class="empty" id="emptyState">
           <div>업로드 후 파일별 원본과 잘라낸 결과 미리보기가 여기에 표시됩니다.</div>
@@ -619,7 +641,6 @@
         <div class="actions">
           <button class="secondary" id="copyButton" type="button" disabled>모두 복사</button>
           <button class="secondary office-only" id="insertPptButton" type="button" hidden disabled>모두 PPT에 넣기</button>
-          <button id="downloadButton" type="button" disabled>모두 PNG 다운로드</button>
         </div>
       </section>
     </section>
@@ -645,12 +666,58 @@
     const dropZoneTitle = document.querySelector("#dropZoneTitle");
     const dropZoneHelp = document.querySelector("#dropZoneHelp");
 
+    const SETTINGS_KEY = "transparent-image-trimmer-settings";
+    const MAX_IMAGE_PIXELS = 50000000;
+    const MAX_IMAGE_DIMENSION = 32767;
+    const ZIP_UTF8_FLAG = 0x0800;
+    const ZIP_VERSION = 20;
+
     let imageItems = [];
     let isPowerPointReady = false;
+    let loadRevision = 0;
+    let trimTimer = 0;
+    let isDownloading = false;
 
     function setStatus(message, isError = false) {
       status.textContent = message;
       status.classList.toggle("error", isError);
+    }
+
+    function restoreSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+        const savedThreshold = Number(saved?.threshold);
+        const savedPadding = Number(saved?.padding);
+
+        if (Number.isInteger(savedThreshold) && savedThreshold >= 0 && savedThreshold <= 254) {
+          threshold.value = String(savedThreshold);
+        }
+
+        if (Number.isInteger(savedPadding) && savedPadding >= 0 && savedPadding <= 64) {
+          padding.value = String(savedPadding);
+        }
+
+        if (typeof saved?.originalName === "boolean") {
+          downloadOriginalName.checked = saved.originalName;
+        }
+      } catch {
+        // 저장소를 사용할 수 없는 환경에서는 기본값을 그대로 사용합니다.
+      }
+
+      thresholdValue.textContent = threshold.value;
+      paddingValue.textContent = `${padding.value}px`;
+    }
+
+    function saveSettings() {
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+          threshold: Number(threshold.value),
+          padding: Number(padding.value),
+          originalName: downloadOriginalName.checked
+        }));
+      } catch {
+        // 설정 저장 실패가 이미지 처리에 영향을 주지 않도록 무시합니다.
+      }
     }
 
     function drawImageToCanvas(canvas, image) {
@@ -662,31 +729,50 @@
       return ctx;
     }
 
-    function getTrimBounds(ctx, width, height, alphaThreshold) {
+    function buildTrimBoundsByThreshold(ctx, width, height) {
       const pixels = ctx.getImageData(0, 0, width, height).data;
-      let minX = width;
-      let minY = height;
-      let maxX = -1;
-      let maxY = -1;
+      const alphaMinX = new Int32Array(256);
+      const alphaMinY = new Int32Array(256);
+      const alphaMaxX = new Int32Array(256);
+      const alphaMaxY = new Int32Array(256);
+
+      alphaMinX.fill(width);
+      alphaMinY.fill(height);
+      alphaMaxX.fill(-1);
+      alphaMaxY.fill(-1);
 
       for (let y = 0; y < height; y += 1) {
         const row = y * width * 4;
         for (let x = 0; x < width; x += 1) {
           const alpha = pixels[row + x * 4 + 3];
-          if (alpha > alphaThreshold) {
-            if (x < minX) minX = x;
-            if (y < minY) minY = y;
-            if (x > maxX) maxX = x;
-            if (y > maxY) maxY = y;
-          }
+          if (!alpha) continue;
+          if (x < alphaMinX[alpha]) alphaMinX[alpha] = x;
+          if (y < alphaMinY[alpha]) alphaMinY[alpha] = y;
+          if (x > alphaMaxX[alpha]) alphaMaxX[alpha] = x;
+          if (y > alphaMaxY[alpha]) alphaMaxY[alpha] = y;
         }
       }
 
-      if (maxX === -1) {
-        return null;
+      const boundsByThreshold = new Array(255).fill(null);
+      let minX = width;
+      let minY = height;
+      let maxX = -1;
+      let maxY = -1;
+
+      for (let alpha = 255; alpha >= 1; alpha -= 1) {
+        if (alphaMaxX[alpha] !== -1) {
+          minX = Math.min(minX, alphaMinX[alpha]);
+          minY = Math.min(minY, alphaMinY[alpha]);
+          maxX = Math.max(maxX, alphaMaxX[alpha]);
+          maxY = Math.max(maxY, alphaMaxY[alpha]);
+        }
+
+        boundsByThreshold[alpha - 1] = maxX === -1
+          ? null
+          : { minX, minY, maxX, maxY };
       }
 
-      return { minX, minY, maxX, maxY };
+      return boundsByThreshold;
     }
 
     function createResultItem(fileName) {
@@ -696,9 +782,10 @@
         <div class="result-top">
           <div class="result-name" title=""></div>
           <div class="result-actions">
-            <button class="secondary copy-one" type="button">복사</button>
-            <button class="secondary office-only insert-one" type="button" hidden>PPT에 넣기</button>
-            <button class="download-one" type="button">다운로드</button>
+            <button class="secondary copy-one" type="button" disabled>복사</button>
+            <button class="secondary office-only insert-one" type="button" hidden disabled>PPT에 넣기</button>
+            <button class="download-one" type="button" disabled>다운로드</button>
+            <button class="secondary remove-one" type="button">삭제</button>
           </div>
         </div>
         <div class="result-body">
@@ -732,56 +819,82 @@
       return resultItem;
     }
 
+    function markItemUnavailable(item, message, processingError = false) {
+      item.trimmedCanvas.width = 1;
+      item.trimmedCanvas.height = 1;
+      item.trimmedCanvas.getContext("2d").clearRect(0, 0, 1, 1);
+      item.trimmedMeta.textContent = message;
+      item.valid = false;
+      item.processingError = processingError;
+      item.downloadButton.disabled = true;
+      item.copyButton.disabled = true;
+    }
+
     function trimItem(item) {
-      const originalCanvas = item.originalCanvas;
-      const trimmedCanvas = item.trimmedCanvas;
-      const originalCtx = drawImageToCanvas(originalCanvas, item.image);
-      const width = originalCanvas.width;
-      const height = originalCanvas.height;
-      const alphaThreshold = Number(threshold.value);
-      const extraPadding = Number(padding.value);
-      const bounds = getTrimBounds(originalCtx, width, height, alphaThreshold);
+      try {
+        const originalCanvas = item.originalCanvas;
+        const trimmedCanvas = item.trimmedCanvas;
 
-      item.originalMeta.textContent = `${width} x ${height}px`;
+        if (!item.boundsByThreshold) {
+          const width = item.image.naturalWidth;
+          const height = item.image.naturalHeight;
 
-      if (!bounds) {
-        trimmedCanvas.width = 1;
-        trimmedCanvas.height = 1;
-        trimmedCanvas.getContext("2d").clearRect(0, 0, 1, 1);
-        item.trimmedMeta.textContent = "투명 이미지";
-        item.valid = false;
-        item.downloadButton.disabled = true;
-        item.copyButton.disabled = true;
-        return;
+          if (!width || !height) {
+            throw new Error("이미지 크기를 확인할 수 없음");
+          }
+
+          if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || width * height > MAX_IMAGE_PIXELS) {
+            throw new Error("이미지가 너무 큼");
+          }
+
+          const originalCtx = drawImageToCanvas(originalCanvas, item.image);
+          item.boundsByThreshold = buildTrimBoundsByThreshold(originalCtx, width, height);
+          item.originalMeta.textContent = `${width} x ${height}px`;
+        }
+
+        const width = originalCanvas.width;
+        const height = originalCanvas.height;
+        const alphaThreshold = Number(threshold.value);
+        const extraPadding = Number(padding.value);
+        const bounds = item.boundsByThreshold[alphaThreshold];
+
+        if (!bounds) {
+          markItemUnavailable(item, "투명 이미지");
+          return;
+        }
+
+        const sourceX = Math.max(0, bounds.minX - extraPadding);
+        const sourceY = Math.max(0, bounds.minY - extraPadding);
+        const sourceRight = Math.min(width - 1, bounds.maxX + extraPadding);
+        const sourceBottom = Math.min(height - 1, bounds.maxY + extraPadding);
+        const trimWidth = sourceRight - sourceX + 1;
+        const trimHeight = sourceBottom - sourceY + 1;
+
+        trimmedCanvas.width = trimWidth;
+        trimmedCanvas.height = trimHeight;
+        const trimmedCtx = trimmedCanvas.getContext("2d");
+        trimmedCtx.clearRect(0, 0, trimWidth, trimHeight);
+        trimmedCtx.drawImage(
+          originalCanvas,
+          sourceX,
+          sourceY,
+          trimWidth,
+          trimHeight,
+          0,
+          0,
+          trimWidth,
+          trimHeight
+        );
+
+        item.trimmedMeta.textContent = `${trimWidth} x ${trimHeight}px`;
+        item.valid = true;
+        item.processingError = false;
+        item.downloadButton.disabled = false;
+        item.copyButton.disabled = !navigator.clipboard || !window.ClipboardItem;
+      } catch (error) {
+        const message = error?.message || "처리 실패";
+        markItemUnavailable(item, message, true);
       }
-
-      const sourceX = Math.max(0, bounds.minX - extraPadding);
-      const sourceY = Math.max(0, bounds.minY - extraPadding);
-      const sourceRight = Math.min(width - 1, bounds.maxX + extraPadding);
-      const sourceBottom = Math.min(height - 1, bounds.maxY + extraPadding);
-      const trimWidth = sourceRight - sourceX + 1;
-      const trimHeight = sourceBottom - sourceY + 1;
-
-      trimmedCanvas.width = trimWidth;
-      trimmedCanvas.height = trimHeight;
-      const trimmedCtx = trimmedCanvas.getContext("2d");
-      trimmedCtx.clearRect(0, 0, trimWidth, trimHeight);
-      trimmedCtx.drawImage(
-        originalCanvas,
-        sourceX,
-        sourceY,
-        trimWidth,
-        trimHeight,
-        0,
-        0,
-        trimWidth,
-        trimHeight
-      );
-
-      item.trimmedMeta.textContent = `${trimWidth} x ${trimHeight}px`;
-      item.valid = true;
-      item.downloadButton.disabled = false;
-      item.copyButton.disabled = !navigator.clipboard || !window.ClipboardItem;
     }
 
     function setPowerPointControlsVisible(isVisible) {
@@ -802,24 +915,49 @@
       });
     }
 
+    function updateBatchButtons() {
+      const validCount = imageItems.filter((item) => item.valid).length;
+      const clipboardAvailable = Boolean(navigator.clipboard && window.ClipboardItem);
+
+      downloadButton.disabled = isDownloading || !validCount;
+      downloadButton.textContent = validCount > 1
+        ? `${validCount}장 PNG 묶음 다운로드`
+        : "모두 PNG 다운로드";
+
+      copyButton.disabled = !clipboardAvailable || validCount !== 1;
+      copyButton.textContent = validCount > 1
+        ? "여러 장은 개별 복사"
+        : validCount === 1
+          ? "결과 복사"
+          : "모두 복사";
+
+      updatePowerPointButtons();
+    }
+
     function trimImages() {
       if (!imageItems.length) return;
 
       imageItems.forEach(trimItem);
       const validCount = imageItems.filter((item) => item.valid).length;
+      const failedCount = imageItems.filter((item) => item.processingError).length;
+
+      updateBatchButtons();
 
       if (!validCount) {
-        setStatus("불투명 픽셀이 있는 이미지가 없습니다. 투명도 기준을 낮춰보세요.", true);
-        downloadButton.disabled = true;
-        copyButton.disabled = true;
-        updatePowerPointButtons();
+        const message = failedCount
+          ? "이미지가 너무 크거나 브라우저에서 처리할 수 없습니다."
+          : "불투명 픽셀이 있는 이미지가 없습니다. 투명도 기준을 낮춰보세요.";
+        setStatus(message, true);
         return;
       }
 
-      setStatus(`${validCount}장의 이미지 처리가 완료됐습니다.`);
-      downloadButton.disabled = false;
-      copyButton.disabled = !navigator.clipboard || !window.ClipboardItem;
-      updatePowerPointButtons();
+      const failedMessage = failedCount ? `, ${failedCount}장은 처리하지 못했습니다` : "";
+      setStatus(`${validCount}장의 이미지 처리가 완료됐습니다${failedMessage}.`);
+    }
+
+    function scheduleTrimImages() {
+      clearTimeout(trimTimer);
+      trimTimer = window.setTimeout(trimImages, 80);
     }
 
     function loadImage(file) {
@@ -844,8 +982,34 @@
       });
     }
 
-    function revokeItems() {
-      imageItems.forEach((item) => URL.revokeObjectURL(item.objectUrl));
+    function revokeItem(item) {
+      if (!item) return;
+      URL.revokeObjectURL(item.objectUrl);
+      item.image.src = "";
+    }
+
+    function revokeItems(items = imageItems) {
+      items.forEach(revokeItem);
+    }
+
+    function removeItem(item) {
+      const index = imageItems.indexOf(item);
+      if (index === -1) return;
+
+      imageItems.splice(index, 1);
+      revokeItem(item);
+      item.element.remove();
+
+      if (!imageItems.length) {
+        resetApp();
+        return;
+      }
+
+      const validCount = imageItems.filter((currentItem) => currentItem.valid).length;
+      updateBatchButtons();
+      setStatus(validCount
+        ? `${validCount}장의 결과가 남아 있습니다.`
+        : "불투명 픽셀이 있는 이미지가 없습니다.", !validCount);
     }
 
     async function loadFiles(fileList) {
@@ -856,6 +1020,8 @@
         return;
       }
 
+      const requestRevision = ++loadRevision;
+      clearTimeout(trimTimer);
       revokeItems();
       imageItems = [];
       resultList.innerHTML = "";
@@ -870,6 +1036,11 @@
 
       const loadedItems = await Promise.all(files.map(loadImage));
 
+      if (requestRevision !== loadRevision) {
+        revokeItems(loadedItems.filter(Boolean));
+        return;
+      }
+
       loadedItems.filter(Boolean).forEach((loaded) => {
         const element = createResultItem(loaded.fileName);
         const item = {
@@ -882,12 +1053,16 @@
           downloadButton: element.querySelector(".download-one"),
           copyButton: element.querySelector(".copy-one"),
           insertButton: element.querySelector(".insert-one"),
+          removeButton: element.querySelector(".remove-one"),
+          boundsByThreshold: null,
+          processingError: false,
           valid: false
         };
 
         item.downloadButton.addEventListener("click", () => downloadItem(item));
         item.copyButton.addEventListener("click", () => copyItem(item));
         item.insertButton.addEventListener("click", () => insertItemIntoPowerPoint(item));
+        item.removeButton.addEventListener("click", () => removeItem(item));
         imageItems.push(item);
         resultList.append(element);
       });
@@ -922,9 +1097,9 @@
       loadFiles(files);
     }
 
-    function getDownloadName(fileName, index = 0) {
+    function getDownloadName(fileName, index = 0, totalCount = 1) {
       if (!downloadOriginalName.checked) {
-        return imageItems.length > 1 ? `trimmed-image-${index + 1}.png` : "trimmed-image.png";
+        return totalCount > 1 ? `trimmed-image-${index + 1}.png` : "trimmed-image.png";
       }
 
       const dot = fileName.lastIndexOf(".");
@@ -932,22 +1107,185 @@
       return `${base}-trimmed.png`;
     }
 
-    function downloadItem(item) {
-      if (!item.valid) return;
+    function makeUniqueFileNames(fileNames) {
+      const usedNames = new Set();
 
-      const link = document.createElement("a");
-      link.download = getDownloadName(item.fileName, imageItems.indexOf(item));
-      link.href = item.trimmedCanvas.toDataURL("image/png");
-      link.click();
+      return fileNames.map((fileName) => {
+        const dot = fileName.lastIndexOf(".");
+        const base = dot > 0 ? fileName.slice(0, dot) : fileName;
+        const extension = dot > 0 ? fileName.slice(dot) : "";
+        let candidate = fileName;
+        let suffix = 2;
+
+        while (usedNames.has(candidate.toLocaleLowerCase())) {
+          candidate = `${base}-${suffix}${extension}`;
+          suffix += 1;
+        }
+
+        usedNames.add(candidate.toLocaleLowerCase());
+        return candidate;
+      });
     }
 
-    function downloadAllImages() {
-      imageItems.filter((item) => item.valid).forEach((item, index) => {
-        const link = document.createElement("a");
-        link.download = getDownloadName(item.fileName, index);
-        link.href = item.trimmedCanvas.toDataURL("image/png");
-        link.click();
-      });
+    function downloadBlob(blob, fileName) {
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.download = fileName;
+      link.href = objectUrl;
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    }
+
+    const CRC32_TABLE = (() => {
+      const table = new Uint32Array(256);
+
+      for (let index = 0; index < 256; index += 1) {
+        let value = index;
+        for (let bit = 0; bit < 8; bit += 1) {
+          value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+        }
+        table[index] = value >>> 0;
+      }
+
+      return table;
+    })();
+
+    function getCrc32(bytes) {
+      let crc = 0xffffffff;
+
+      for (const byte of bytes) {
+        crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+      }
+
+      return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    function getZipDateTime(date = new Date()) {
+      const year = Math.min(2107, Math.max(1980, date.getFullYear()));
+      return {
+        date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+        time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2)
+      };
+    }
+
+    async function createZipBlob(entries) {
+      const encoder = new TextEncoder();
+      const localParts = [];
+      const centralParts = [];
+      const timestamp = getZipDateTime();
+      let localOffset = 0;
+      let centralSize = 0;
+
+      for (const entry of entries) {
+        const nameBytes = encoder.encode(entry.name);
+        const data = new Uint8Array(await entry.blob.arrayBuffer());
+        const crc = getCrc32(data);
+        const localHeader = new Uint8Array(30 + nameBytes.length);
+        const localView = new DataView(localHeader.buffer);
+
+        localView.setUint32(0, 0x04034b50, true);
+        localView.setUint16(4, ZIP_VERSION, true);
+        localView.setUint16(6, ZIP_UTF8_FLAG, true);
+        localView.setUint16(8, 0, true);
+        localView.setUint16(10, timestamp.time, true);
+        localView.setUint16(12, timestamp.date, true);
+        localView.setUint32(14, crc, true);
+        localView.setUint32(18, data.byteLength, true);
+        localView.setUint32(22, data.byteLength, true);
+        localView.setUint16(26, nameBytes.length, true);
+        localView.setUint16(28, 0, true);
+        localHeader.set(nameBytes, 30);
+
+        const centralHeader = new Uint8Array(46 + nameBytes.length);
+        const centralView = new DataView(centralHeader.buffer);
+        centralView.setUint32(0, 0x02014b50, true);
+        centralView.setUint16(4, ZIP_VERSION, true);
+        centralView.setUint16(6, ZIP_VERSION, true);
+        centralView.setUint16(8, ZIP_UTF8_FLAG, true);
+        centralView.setUint16(10, 0, true);
+        centralView.setUint16(12, timestamp.time, true);
+        centralView.setUint16(14, timestamp.date, true);
+        centralView.setUint32(16, crc, true);
+        centralView.setUint32(20, data.byteLength, true);
+        centralView.setUint32(24, data.byteLength, true);
+        centralView.setUint16(28, nameBytes.length, true);
+        centralView.setUint16(30, 0, true);
+        centralView.setUint16(32, 0, true);
+        centralView.setUint16(34, 0, true);
+        centralView.setUint16(36, 0, true);
+        centralView.setUint32(38, 0, true);
+        centralView.setUint32(42, localOffset, true);
+        centralHeader.set(nameBytes, 46);
+
+        localParts.push(localHeader, data);
+        centralParts.push(centralHeader);
+        localOffset += localHeader.byteLength + data.byteLength;
+        centralSize += centralHeader.byteLength;
+      }
+
+      const endRecord = new Uint8Array(22);
+      const endView = new DataView(endRecord.buffer);
+      endView.setUint32(0, 0x06054b50, true);
+      endView.setUint16(4, 0, true);
+      endView.setUint16(6, 0, true);
+      endView.setUint16(8, entries.length, true);
+      endView.setUint16(10, entries.length, true);
+      endView.setUint32(12, centralSize, true);
+      endView.setUint32(16, localOffset, true);
+      endView.setUint16(20, 0, true);
+
+      return new Blob([...localParts, ...centralParts, endRecord], { type: "application/zip" });
+    }
+
+    async function downloadItem(item) {
+      if (!item.valid) return;
+
+      try {
+        const blob = await canvasToBlob(item.trimmedCanvas);
+        downloadBlob(blob, getDownloadName(item.fileName));
+        setStatus(`${item.fileName} 결과 이미지를 다운로드했습니다.`);
+      } catch {
+        setStatus("PNG 파일을 만들지 못했습니다.", true);
+      }
+    }
+
+    async function downloadAllImages() {
+      const validItems = imageItems.filter((item) => item.valid);
+      if (!validItems.length || isDownloading) return;
+
+      isDownloading = true;
+      updateBatchButtons();
+
+      try {
+        if (validItems.length === 1) {
+          const item = validItems[0];
+          const blob = await canvasToBlob(item.trimmedCanvas);
+          downloadBlob(blob, getDownloadName(item.fileName));
+          setStatus("PNG 이미지를 다운로드했습니다.");
+          return;
+        }
+
+        setStatus(`${validItems.length}장의 PNG를 묶는 중입니다.`);
+        const names = makeUniqueFileNames(validItems.map((item, index) => (
+          getDownloadName(item.fileName, index, validItems.length)
+        )));
+        const blobs = await Promise.all(validItems.map((item) => canvasToBlob(item.trimmedCanvas)));
+        const zipBlob = await createZipBlob(blobs.map((blob, index) => ({
+          name: names[index],
+          blob
+        })));
+
+        downloadBlob(zipBlob, "trimmed-images.zip");
+        setStatus(`${validItems.length}장의 PNG를 ZIP으로 다운로드했습니다.`);
+      } catch {
+        setStatus("다운로드 파일을 만들지 못했습니다.", true);
+      } finally {
+        isDownloading = false;
+        updateBatchButtons();
+      }
     }
 
     async function copyItem(item) {
@@ -996,23 +1334,43 @@
 
       if (!validItems.length) return;
 
-      try {
-        const clipboardItems = await Promise.all(validItems.map(async (item) => {
-          const blob = await canvasToBlob(item.trimmedCanvas);
-          return new ClipboardItem({ "image/png": blob });
-        }));
-
-        await navigator.clipboard.write(clipboardItems);
-        setStatus(`${validItems.length}장의 결과 이미지를 클립보드에 복사했습니다.`);
-      } catch {
-        const message = validItems.length > 1
-          ? "여러 이미지 동시 복사를 지원하지 않습니다. 모두 PPT에 넣기를 사용해보세요."
-          : "브라우저가 이미지 클립보드 복사를 허용하지 않았습니다.";
-        setStatus(message, true);
+      if (validItems.length > 1) {
+        setStatus("클립보드는 여러 장을 보장하지 않습니다. 각 이미지의 복사 버튼을 사용해주세요.", true);
+        return;
       }
+
+      await copyItem(validItems[0]);
     }
 
-    async function addPictureToSelectedSlide(base64Image) {
+    function createPowerPointPlacements(items) {
+      const slideWidth = 960;
+      const slideHeight = 540;
+      const margin = 36;
+      const gap = 18;
+      const columns = Math.ceil(Math.sqrt(items.length));
+      const rows = Math.ceil(items.length / columns);
+      const cellWidth = (slideWidth - margin * 2 - gap * (columns - 1)) / columns;
+      const cellHeight = (slideHeight - margin * 2 - gap * (rows - 1)) / rows;
+
+      return items.map((item, index) => {
+        const column = index % columns;
+        const row = Math.floor(index / columns);
+        const naturalWidth = Math.max(1, item.trimmedCanvas.width * 0.75);
+        const naturalHeight = Math.max(1, item.trimmedCanvas.height * 0.75);
+        const scale = Math.min(1, cellWidth / naturalWidth, cellHeight / naturalHeight);
+        const width = naturalWidth * scale;
+        const height = naturalHeight * scale;
+
+        return {
+          left: margin + column * (cellWidth + gap) + (cellWidth - width) / 2,
+          top: margin + row * (cellHeight + gap) + (cellHeight - height) / 2,
+          width,
+          height
+        };
+      });
+    }
+
+    async function addPictureToSelectedSlide(base64Image, placement) {
       if (!window.PowerPoint || !PowerPoint.run) {
         throw new Error("PowerPoint 그림 추가 API를 사용할 수 없습니다.");
       }
@@ -1024,13 +1382,53 @@
           throw new Error("PowerPoint 그림 추가 API를 사용할 수 없습니다.");
         }
 
-        selectedSlide.shapes.addPicture(base64Image, {
-          left: 36,
-          top: 36
+        selectedSlide.shapes.addPicture(base64Image, placement);
+
+        await context.sync();
+      });
+    }
+
+    async function addPicturesToSelectedSlide(items, placements) {
+      if (!window.PowerPoint || !PowerPoint.run) {
+        throw new Error("PowerPoint 그림 추가 API를 사용할 수 없습니다.");
+      }
+
+      await PowerPoint.run(async (context) => {
+        const selectedSlide = context.presentation.getSelectedSlides().getItemAt(0);
+
+        if (!selectedSlide.shapes || typeof selectedSlide.shapes.addPicture !== "function") {
+          throw new Error("PowerPoint 그림 추가 API를 사용할 수 없습니다.");
+        }
+
+        items.forEach((item, index) => {
+          selectedSlide.shapes.addPicture(
+            canvasToBase64Png(item.trimmedCanvas),
+            placements[index]
+          );
         });
 
         await context.sync();
       });
+    }
+
+    function createPowerPointComposite(items, placements) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 960;
+      canvas.height = 540;
+      const ctx = canvas.getContext("2d");
+
+      items.forEach((item, index) => {
+        const placement = placements[index];
+        ctx.drawImage(
+          item.trimmedCanvas,
+          placement.left,
+          placement.top,
+          placement.width,
+          placement.height
+        );
+      });
+
+      return canvas;
     }
 
     function insertImageBase64IntoPowerPoint(base64Image) {
@@ -1050,9 +1448,9 @@
       });
     }
 
-    async function insertNewImageIntoPowerPoint(base64Image, allowSelectionFallback = true) {
+    async function insertNewImageIntoPowerPoint(base64Image, placement, allowSelectionFallback = true) {
       try {
-        await addPictureToSelectedSlide(base64Image);
+        await addPictureToSelectedSlide(base64Image, placement);
       } catch {
         if (!allowSelectionFallback) {
           throw new Error("PowerPoint에서 여러 장 개별 삽입 API를 사용할 수 없습니다.");
@@ -1071,8 +1469,9 @@
         setStatus(`${item.fileName} 결과 이미지를 PowerPoint에 넣는 중입니다.`);
 
         const base64Image = canvasToBase64Png(item.trimmedCanvas);
+        const placement = createPowerPointPlacements([item])[0];
 
-        await insertNewImageIntoPowerPoint(base64Image);
+        await insertNewImageIntoPowerPoint(base64Image, placement);
         setStatus(`${item.fileName} 결과 이미지를 현재 슬라이드에 넣었습니다.`);
       } catch (error) {
         const message = error && error.message ? error.message : "PowerPoint 삽입에 실패했습니다.";
@@ -1096,11 +1495,16 @@
         });
         setStatus(`${validItems.length}장의 결과 이미지를 PowerPoint에 넣는 중입니다.`);
 
-        for (const item of validItems) {
-          await insertNewImageIntoPowerPoint(canvasToBase64Png(item.trimmedCanvas), false);
-        }
+        const placements = createPowerPointPlacements(validItems);
 
-        setStatus(`${validItems.length}장의 결과 이미지를 현재 슬라이드에 넣었습니다.`);
+        try {
+          await addPicturesToSelectedSlide(validItems, placements);
+          setStatus(`${validItems.length}장의 결과 이미지를 현재 슬라이드에 각각 넣었습니다.`);
+        } catch {
+          const composite = createPowerPointComposite(validItems, placements);
+          await insertImageBase64IntoPowerPoint(canvasToBase64Png(composite));
+          setStatus(`${validItems.length}장의 결과 이미지를 한 장으로 배치해 넣었습니다.`);
+        }
       } catch (error) {
         const message = error && error.message ? error.message : "PowerPoint 삽입에 실패했습니다.";
         setStatus(message, true);
@@ -1110,6 +1514,9 @@
     }
 
     function resetApp() {
+      loadRevision += 1;
+      clearTimeout(trimTimer);
+      isDownloading = false;
       revokeItems();
       imageItems = [];
       fileInput.value = "";
@@ -1117,9 +1524,8 @@
       emptyState.hidden = false;
       resultList.hidden = true;
       resetButton.disabled = true;
-      downloadButton.disabled = true;
-      copyButton.disabled = true;
       insertPptButton.disabled = true;
+      updateBatchButtons();
       setStatus("아직 이미지가 없습니다.");
     }
 
@@ -1146,6 +1552,8 @@
             setStatus("PPT에서 복사한 이미지를 붙여넣으면 여백을 제거해 다시 넣을 수 있습니다.");
           }
         }
+
+        updateBatchButtons();
       });
     }
 
@@ -1172,18 +1580,30 @@
 
     threshold.addEventListener("input", () => {
       thresholdValue.textContent = threshold.value;
-      trimImages();
+      saveSettings();
+      scheduleTrimImages();
     });
 
     padding.addEventListener("input", () => {
       paddingValue.textContent = `${padding.value}px`;
-      trimImages();
+      saveSettings();
+      scheduleTrimImages();
+    });
+
+    downloadOriginalName.addEventListener("change", saveSettings);
+
+    document.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !isPowerPointReady && !downloadButton.disabled) {
+        event.preventDefault();
+        downloadAllImages();
+      }
     });
 
     downloadButton.addEventListener("click", downloadAllImages);
     copyButton.addEventListener("click", copyAllImages);
     insertPptButton.addEventListener("click", insertAllImagesIntoPowerPoint);
     resetButton.addEventListener("click", resetApp);
+    restoreSettings();
     initializePowerPointIntegration();
   </script>
 </body>
