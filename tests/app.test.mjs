@@ -123,19 +123,33 @@ test("duplicate PNG names receive stable suffixes", () => {
   ]);
 });
 
-test("ZIP output contains two UTF-8 entries and a central directory", async () => {
-  const zip = await app.createZipBlob([
-    { name: "one.png", blob: new Blob([new Uint8Array([1, 2, 3])]) },
-    { name: "둘.png", blob: new Blob([new Uint8Array([4, 5])]) }
-  ]);
-  const bytes = new Uint8Array(await zip.arrayBuffer());
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const endOffset = bytes.byteLength - 22;
+test("multiple results are downloaded as individual PNG files", async () => {
+  app.__downloadedFiles = [];
+  vm.runInContext(`
+    imageItems = [
+      {
+        valid: true,
+        fileName: "image.png",
+        trimmedCanvas: { toBlob(callback) { callback(new Blob(["one"], { type: "image/png" })); } },
+        insertButton: { disabled: false }
+      },
+      {
+        valid: true,
+        fileName: "IMAGE.png",
+        trimmedCanvas: { toBlob(callback) { callback(new Blob(["two"], { type: "image/png" })); } },
+        insertButton: { disabled: false }
+      }
+    ];
+    downloadBlob = (blob, fileName) => __downloadedFiles.push({ blob, fileName });
+  `, app);
 
-  assert.equal(view.getUint32(0, true), 0x04034b50);
-  assert.equal(view.getUint32(endOffset, true), 0x06054b50);
-  assert.equal(view.getUint16(endOffset + 10, true), 2);
-  assert.equal(view.getUint32(view.getUint32(endOffset + 16, true), true), 0x02014b50);
+  await app.downloadAllImages();
+
+  assert.deepEqual(
+    Array.from(app.__downloadedFiles, (entry) => entry.fileName),
+    ["image-trimmed.png", "IMAGE-trimmed-2.png"]
+  );
+  assert.ok(app.__downloadedFiles.every((entry) => entry.blob.type === "image/png"));
 });
 
 test("PowerPoint placements stay inside the slide and do not overlap", () => {
