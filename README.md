@@ -7,11 +7,14 @@ Use the hosted app: [Transparent Image Trimmer](https://teemozipsa.github.io/tra
 ## Features
 
 - Batch image upload by file picker or drag and drop
+- Per-image batch progress updates
 - Automatic transparent edge trimming by alpha threshold
+- Optional strong trim mode for ignoring sparse edge pixels
 - Optional padding around the trimmed result
 - Per-image PNG download and copy
 - One-click PNG download for a single result
 - Direct individual PNG downloads for multiple processed images
+- Optional ZIP download for multiple processed images
 - Saved threshold, padding, and filename preferences
 - Ctrl+Enter download shortcut and per-image removal
 

@@ -221,6 +221,10 @@
       line-height: 1.4;
     }
 
+    label.checkbox + label.checkbox {
+      margin-top: 10px;
+    }
+
     input[type="checkbox"] {
       width: 18px;
       height: 18px;
@@ -256,6 +260,14 @@
       justify-content: space-between;
       gap: 12px;
       margin-bottom: 14px;
+    }
+
+    .batch-download-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
     }
 
     .status {
@@ -471,7 +483,7 @@
     }
 
     body.office-host .download-option,
-    body.office-host #downloadButton,
+    body.office-host .batch-download-actions,
     body.office-host .download-one {
       display: none;
     }
@@ -552,6 +564,15 @@
         flex-direction: column;
       }
 
+      .batch-download-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .batch-download-actions button {
+        width: 100%;
+      }
+
       .app-header {
         display: grid;
         align-items: start;
@@ -595,7 +616,7 @@
 
     <section class="layout">
       <aside>
-        <div class="drop-zone" id="dropZone" tabindex="0">
+        <div class="drop-zone" id="dropZone" role="region" tabindex="0" aria-labelledby="dropZoneTitle" aria-describedby="dropZoneHelp" aria-keyshortcuts="Enter Space">
           <div>
             <strong id="dropZoneTitle">이미지를 여기에 놓기</strong>
             <span id="dropZoneHelp">여러 장을 한 번에 놓거나, PPT에서 복사한 뒤 여기를 눌러 <kbd>Ctrl+V</kbd> 하세요.</span>
@@ -619,6 +640,11 @@
             <input id="padding" type="range" min="0" max="64" value="0">
           </div>
 
+          <label class="checkbox strong-option">
+            <input id="strongTrim" type="checkbox">
+            강하게 제거 (가장자리 미세 픽셀 무시)
+          </label>
+
           <label class="checkbox download-option">
             <input id="downloadOriginalName" type="checkbox" checked>
             원본 파일명에 -trimmed 붙여서 저장
@@ -628,8 +654,11 @@
 
       <section class="preview">
         <div class="preview-head">
-          <div class="status" id="status">아직 이미지가 없습니다.</div>
-          <button id="downloadButton" type="button" aria-keyshortcuts="Control+Enter Meta+Enter" title="Ctrl+Enter" disabled>모두 PNG 다운로드</button>
+          <div class="status" id="status" role="status" aria-live="polite" aria-atomic="true">아직 이미지가 없습니다.</div>
+          <div class="batch-download-actions">
+            <button id="downloadButton" type="button" aria-keyshortcuts="Control+Enter Meta+Enter" title="Ctrl+Enter" disabled>모두 PNG 다운로드</button>
+            <button class="secondary" id="zipButton" type="button" disabled>ZIP으로 받기</button>
+          </div>
         </div>
 
         <div class="empty" id="emptyState">
@@ -651,12 +680,14 @@
     const dropZone = document.querySelector("#dropZone");
     const resetButton = document.querySelector("#resetButton");
     const downloadButton = document.querySelector("#downloadButton");
+    const zipButton = document.querySelector("#zipButton");
     const copyButton = document.querySelector("#copyButton");
     const insertPptButton = document.querySelector("#insertPptButton");
     const threshold = document.querySelector("#threshold");
     const thresholdValue = document.querySelector("#thresholdValue");
     const padding = document.querySelector("#padding");
     const paddingValue = document.querySelector("#paddingValue");
+    const strongTrim = document.querySelector("#strongTrim");
     const status = document.querySelector("#status");
     const emptyState = document.querySelector("#emptyState");
     const resultList = document.querySelector("#resultList");
@@ -669,11 +700,24 @@
     const SETTINGS_KEY = "transparent-image-trimmer-settings";
     const MAX_IMAGE_PIXELS = 50000000;
     const MAX_IMAGE_DIMENSION = 32767;
+    const CRC32_TABLE = new Uint32Array(256);
+
+    for (let index = 0; index < CRC32_TABLE.length; index += 1) {
+      let value = index;
+
+      for (let bit = 0; bit < 8; bit += 1) {
+        value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+      }
+
+      CRC32_TABLE[index] = value >>> 0;
+    }
 
     let imageItems = [];
     let isPowerPointReady = false;
     let loadRevision = 0;
+    let trimRevision = 0;
     let trimTimer = 0;
+    let isTrimming = false;
     let isDownloading = false;
 
     function setStatus(message, isError = false) {
@@ -698,6 +742,10 @@
         if (typeof saved?.originalName === "boolean") {
           downloadOriginalName.checked = saved.originalName;
         }
+
+        if (typeof saved?.strongTrim === "boolean") {
+          strongTrim.checked = saved.strongTrim;
+        }
       } catch {
         // 저장소를 사용할 수 없는 환경에서는 기본값을 그대로 사용합니다.
       }
@@ -711,6 +759,7 @@
         localStorage.setItem(SETTINGS_KEY, JSON.stringify({
           threshold: Number(threshold.value),
           padding: Number(padding.value),
+          strongTrim: strongTrim.checked,
           originalName: downloadOriginalName.checked
         }));
       } catch {
@@ -771,6 +820,49 @@
       }
 
       return boundsByThreshold;
+    }
+
+    function buildStrongTrimBounds(ctx, width, height, alphaThreshold, fallbackBounds) {
+      const pixels = ctx.getImageData(0, 0, width, height).data;
+      const rowCounts = new Uint32Array(height);
+      const columnCounts = new Uint32Array(width);
+
+      for (let y = 0; y < height; y += 1) {
+        const row = y * width * 4;
+
+        for (let x = 0; x < width; x += 1) {
+          if (pixels[row + x * 4 + 3] <= alphaThreshold) continue;
+          rowCounts[y] += 1;
+          columnCounts[x] += 1;
+        }
+      }
+
+      const minimumRowPixels = Math.min(8, Math.max(2, Math.ceil(width * 0.002)));
+      const minimumColumnPixels = Math.min(8, Math.max(2, Math.ceil(height * 0.002)));
+      const minY = rowCounts.findIndex((count) => count >= minimumRowPixels);
+      const minX = columnCounts.findIndex((count) => count >= minimumColumnPixels);
+      let maxY = -1;
+      let maxX = -1;
+
+      for (let y = height - 1; y >= 0; y -= 1) {
+        if (rowCounts[y] >= minimumRowPixels) {
+          maxY = y;
+          break;
+        }
+      }
+
+      for (let x = width - 1; x >= 0; x -= 1) {
+        if (columnCounts[x] >= minimumColumnPixels) {
+          maxX = x;
+          break;
+        }
+      }
+
+      if (minX === -1 || minY === -1 || maxX === -1 || maxY === -1) {
+        return fallbackBounds;
+      }
+
+      return { minX, minY, maxX, maxY };
     }
 
     function createResultItem(fileName) {
@@ -854,7 +946,16 @@
         const height = originalCanvas.height;
         const alphaThreshold = Number(threshold.value);
         const extraPadding = Number(padding.value);
-        const bounds = item.boundsByThreshold[alphaThreshold];
+        const exactBounds = item.boundsByThreshold[alphaThreshold];
+        const bounds = exactBounds && strongTrim.checked
+          ? buildStrongTrimBounds(
+              originalCanvas.getContext("2d", { willReadFrequently: true }),
+              width,
+              height,
+              alphaThreshold,
+              exactBounds
+            )
+          : exactBounds;
 
         if (!bounds) {
           markItemUnavailable(item, "투명 이미지");
@@ -903,12 +1004,12 @@
 
     function updatePowerPointButtons() {
       const hasValidImage = imageItems.some((item) => item.valid);
-      insertPptButton.disabled = !isPowerPointReady || !hasValidImage;
+      insertPptButton.disabled = isTrimming || !isPowerPointReady || !hasValidImage;
 
       imageItems.forEach((item) => {
         if (item.insertButton) {
           item.insertButton.hidden = !isPowerPointReady;
-          item.insertButton.disabled = !isPowerPointReady || !item.valid;
+          item.insertButton.disabled = isTrimming || !isPowerPointReady || !item.valid;
         }
       });
     }
@@ -916,26 +1017,86 @@
     function updateBatchButtons() {
       const validCount = imageItems.filter((item) => item.valid).length;
       const clipboardAvailable = Boolean(navigator.clipboard && window.ClipboardItem);
+      const controlsBusy = isDownloading || isTrimming;
 
-      downloadButton.disabled = isDownloading || !validCount;
+      downloadButton.disabled = controlsBusy || !validCount;
       downloadButton.textContent = validCount > 1
         ? `${validCount}장 PNG 모두 다운로드`
         : "모두 PNG 다운로드";
 
-      copyButton.disabled = !clipboardAvailable || validCount !== 1;
+      zipButton.disabled = controlsBusy || validCount < 2;
+      copyButton.disabled = controlsBusy || !clipboardAvailable || validCount !== 1;
       copyButton.textContent = validCount > 1
         ? "여러 장은 개별 복사"
         : validCount === 1
           ? "결과 복사"
           : "모두 복사";
 
+      imageItems.forEach((item) => {
+        if (item.downloadButton) {
+          item.downloadButton.disabled = controlsBusy || !item.valid;
+        }
+
+        if (item.copyButton) {
+          item.copyButton.disabled = controlsBusy || !clipboardAvailable || !item.valid;
+        }
+      });
+
       updatePowerPointButtons();
     }
 
-    function trimImages() {
+    function waitForNextPaint() {
+      return new Promise((resolve) => {
+        if (typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(() => {
+            window.setTimeout(resolve, 0);
+          });
+          return;
+        }
+
+        window.setTimeout(resolve, 0);
+      });
+    }
+
+    async function processItemsSequentially(items, processItem, onProgress, shouldContinue) {
+      for (let index = 0; index < items.length; index += 1) {
+        if (!shouldContinue()) return false;
+        processItem(items[index], index);
+        onProgress(index + 1, items.length);
+
+        if (index + 1 < items.length) {
+          await waitForNextPaint();
+        }
+      }
+
+      return shouldContinue();
+    }
+
+    async function trimImages() {
       if (!imageItems.length) return;
 
-      imageItems.forEach(trimItem);
+      const requestRevision = ++trimRevision;
+      const items = [...imageItems];
+      isTrimming = true;
+      updateBatchButtons();
+
+      const completed = await processItemsSequentially(
+        items,
+        (item) => {
+          if (imageItems.includes(item)) {
+            trimItem(item);
+          }
+        },
+        (completedCount, totalCount) => {
+          updateBatchButtons();
+          setStatus(`${completedCount}/${totalCount}장 처리 중입니다.`);
+        },
+        () => requestRevision === trimRevision
+      );
+
+      if (!completed || requestRevision !== trimRevision) return;
+
+      isTrimming = false;
       const validCount = imageItems.filter((item) => item.valid).length;
       const failedCount = imageItems.filter((item) => item.processingError).length;
 
@@ -955,7 +1116,9 @@
 
     function scheduleTrimImages() {
       clearTimeout(trimTimer);
-      trimTimer = window.setTimeout(trimImages, 80);
+      trimTimer = window.setTimeout(() => {
+        void trimImages();
+      }, 80);
     }
 
     function loadImage(file) {
@@ -1019,7 +1182,9 @@
       }
 
       const requestRevision = ++loadRevision;
+      trimRevision += 1;
       clearTimeout(trimTimer);
+      isTrimming = false;
       revokeItems();
       imageItems = [];
       resultList.innerHTML = "";
@@ -1028,6 +1193,7 @@
       resultList.hidden = false;
       resetButton.disabled = false;
       downloadButton.disabled = true;
+      zipButton.disabled = true;
       copyButton.disabled = true;
       insertPptButton.disabled = true;
       setStatus(`${files.length}장의 이미지를 읽는 중입니다.`);
@@ -1071,7 +1237,7 @@
         return;
       }
 
-      trimImages();
+      void trimImages();
     }
 
     function getImageFilesFromClipboard(event) {
@@ -1125,6 +1291,105 @@
       });
     }
 
+    function calculateCrc32(bytes) {
+      let crc = 0xffffffff;
+
+      for (let index = 0; index < bytes.length; index += 1) {
+        crc = CRC32_TABLE[(crc ^ bytes[index]) & 0xff] ^ (crc >>> 8);
+      }
+
+      return (crc ^ 0xffffffff) >>> 0;
+    }
+
+    function getDosDateTime(date = new Date()) {
+      const year = Math.min(2107, Math.max(1980, date.getFullYear()));
+
+      return {
+        date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+        time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2)
+      };
+    }
+
+    async function createZipBlob(entries) {
+      if (!entries.length || entries.length > 0xffff) {
+        throw new Error("ZIP에 담을 파일 수가 올바르지 않습니다.");
+      }
+
+      const encoder = new TextEncoder();
+      const localParts = [];
+      const centralParts = [];
+      const dateTime = getDosDateTime();
+      let localOffset = 0;
+
+      for (const entry of entries) {
+        const safeName = entry.name.replace(/[\\/]/g, "_");
+        const nameBytes = encoder.encode(safeName);
+        const data = new Uint8Array(await entry.blob.arrayBuffer());
+
+        if (!nameBytes.length || nameBytes.length > 0xffff || data.length > 0xffffffff) {
+          throw new Error("ZIP에 담을 파일이 너무 큽니다.");
+        }
+
+        const crc = calculateCrc32(data);
+        const localHeader = new Uint8Array(30);
+        const localView = new DataView(localHeader.buffer);
+        localView.setUint32(0, 0x04034b50, true);
+        localView.setUint16(4, 20, true);
+        localView.setUint16(6, 0x0800, true);
+        localView.setUint16(8, 0, true);
+        localView.setUint16(10, dateTime.time, true);
+        localView.setUint16(12, dateTime.date, true);
+        localView.setUint32(14, crc, true);
+        localView.setUint32(18, data.length, true);
+        localView.setUint32(22, data.length, true);
+        localView.setUint16(26, nameBytes.length, true);
+        localView.setUint16(28, 0, true);
+
+        const centralHeader = new Uint8Array(46);
+        const centralView = new DataView(centralHeader.buffer);
+        centralView.setUint32(0, 0x02014b50, true);
+        centralView.setUint16(4, 20, true);
+        centralView.setUint16(6, 20, true);
+        centralView.setUint16(8, 0x0800, true);
+        centralView.setUint16(10, 0, true);
+        centralView.setUint16(12, dateTime.time, true);
+        centralView.setUint16(14, dateTime.date, true);
+        centralView.setUint32(16, crc, true);
+        centralView.setUint32(20, data.length, true);
+        centralView.setUint32(24, data.length, true);
+        centralView.setUint16(28, nameBytes.length, true);
+        centralView.setUint16(30, 0, true);
+        centralView.setUint16(32, 0, true);
+        centralView.setUint16(34, 0, true);
+        centralView.setUint16(36, 0, true);
+        centralView.setUint32(38, 0, true);
+        centralView.setUint32(42, localOffset, true);
+
+        localParts.push(localHeader, nameBytes, data);
+        centralParts.push(centralHeader, nameBytes);
+        localOffset += localHeader.length + nameBytes.length + data.length;
+      }
+
+      const centralSize = centralParts.reduce((total, part) => total + part.length, 0);
+
+      if (localOffset > 0xffffffff || centralSize > 0xffffffff) {
+        throw new Error("ZIP 파일이 너무 큽니다.");
+      }
+
+      const endRecord = new Uint8Array(22);
+      const endView = new DataView(endRecord.buffer);
+      endView.setUint32(0, 0x06054b50, true);
+      endView.setUint16(4, 0, true);
+      endView.setUint16(6, 0, true);
+      endView.setUint16(8, entries.length, true);
+      endView.setUint16(10, entries.length, true);
+      endView.setUint32(12, centralSize, true);
+      endView.setUint32(16, localOffset, true);
+      endView.setUint16(20, 0, true);
+
+      return new Blob([...localParts, ...centralParts, endRecord], { type: "application/zip" });
+    }
+
     function downloadBlob(blob, fileName) {
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -1151,7 +1416,7 @@
 
     async function downloadAllImages() {
       const validItems = imageItems.filter((item) => item.valid);
-      if (!validItems.length || isDownloading) return;
+      if (!validItems.length || isDownloading || isTrimming) return;
 
       isDownloading = true;
       updateBatchButtons();
@@ -1177,6 +1442,34 @@
         setStatus(`${validItems.length}장의 PNG 다운로드를 시작했습니다. 브라우저가 물으면 여러 파일 다운로드를 허용해주세요.`);
       } catch {
         setStatus("다운로드 파일을 만들지 못했습니다.", true);
+      } finally {
+        isDownloading = false;
+        updateBatchButtons();
+      }
+    }
+
+    async function downloadAllImagesAsZip() {
+      const validItems = imageItems.filter((item) => item.valid);
+      if (validItems.length < 2 || isDownloading || isTrimming) return;
+
+      isDownloading = true;
+      updateBatchButtons();
+
+      try {
+        setStatus(`${validItems.length}장의 PNG를 ZIP으로 묶는 중입니다.`);
+        const names = makeUniqueFileNames(validItems.map((item, index) => (
+          getDownloadName(item.fileName, index, validItems.length)
+        )));
+        const blobs = await Promise.all(validItems.map((item) => canvasToBlob(item.trimmedCanvas)));
+        const zipBlob = await createZipBlob(blobs.map((blob, index) => ({
+          name: names[index],
+          blob
+        })));
+
+        downloadBlob(zipBlob, "trimmed-images.zip");
+        setStatus(`${validItems.length}장의 PNG를 담은 ZIP을 다운로드했습니다.`);
+      } catch {
+        setStatus("ZIP 파일을 만들지 못했습니다.", true);
       } finally {
         isDownloading = false;
         updateBatchButtons();
@@ -1410,7 +1703,9 @@
 
     function resetApp() {
       loadRevision += 1;
+      trimRevision += 1;
       clearTimeout(trimTimer);
+      isTrimming = false;
       isDownloading = false;
       revokeItems();
       imageItems = [];
@@ -1419,6 +1714,7 @@
       emptyState.hidden = false;
       resultList.hidden = true;
       resetButton.disabled = true;
+      zipButton.disabled = true;
       insertPptButton.disabled = true;
       updateBatchButtons();
       setStatus("아직 이미지가 없습니다.");
@@ -1471,6 +1767,12 @@
       loadFiles(event.dataTransfer.files);
     });
 
+    dropZone.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      fileInput.click();
+    });
+
     document.addEventListener("paste", pasteClipboardImages);
 
     threshold.addEventListener("input", () => {
@@ -1485,6 +1787,11 @@
       scheduleTrimImages();
     });
 
+    strongTrim.addEventListener("change", () => {
+      saveSettings();
+      scheduleTrimImages();
+    });
+
     downloadOriginalName.addEventListener("change", saveSettings);
 
     document.addEventListener("keydown", (event) => {
@@ -1495,6 +1802,7 @@
     });
 
     downloadButton.addEventListener("click", downloadAllImages);
+    zipButton.addEventListener("click", downloadAllImagesAsZip);
     copyButton.addEventListener("click", copyAllImages);
     insertPptButton.addEventListener("click", insertAllImagesIntoPowerPoint);
     resetButton.addEventListener("click", resetApp);
