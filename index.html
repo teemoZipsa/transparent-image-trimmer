@@ -148,13 +148,26 @@
       place-items: center;
       text-align: center;
       box-shadow: var(--shadow);
-      transition: border-color .15s ease, background .15s ease, transform .15s ease;
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease, box-shadow .15s ease, transform .15s ease;
+    }
+
+    .drop-zone:hover {
+      border-color: var(--accent);
+      background: #f8fffd;
+      box-shadow: 0 20px 48px rgba(22, 122, 109, .14);
     }
 
     .drop-zone.dragging {
       border-color: var(--accent);
       background: #effaf7;
       transform: translateY(-2px);
+    }
+
+    .drop-zone.pasting {
+      border-color: var(--accent);
+      background: #effaf7;
+      cursor: progress;
     }
 
     .drop-zone:focus-visible {
@@ -165,13 +178,79 @@
     .drop-zone strong {
       display: block;
       font-size: 22px;
-      margin-bottom: 8px;
+      line-height: 1.3;
     }
 
     .drop-zone span {
       color: var(--muted);
       line-height: 1.5;
       font-size: 14px;
+    }
+
+    .drop-zone-content {
+      width: min(100%, 290px);
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+    }
+
+    .clipboard-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      background: #e4f3ef;
+      color: var(--accent);
+    }
+
+    .clipboard-icon svg {
+      width: 30px;
+      height: 30px;
+    }
+
+    .paste-call-to-action {
+      min-height: 42px;
+      padding: 0 16px;
+      border-radius: 7px;
+      display: inline-flex !important;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent);
+      color: #fff !important;
+      font-weight: 800;
+      box-shadow: 0 8px 18px rgba(22, 122, 109, .2);
+    }
+
+    .drop-zone:hover .paste-call-to-action,
+    .drop-zone:focus-visible .paste-call-to-action {
+      background: var(--accent-dark);
+    }
+
+    .drop-zone.pasting .paste-call-to-action {
+      opacity: .72;
+    }
+
+    .shortcut-hint {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .drop-zone-feedback {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: #e4f3ef;
+      color: var(--accent-dark) !important;
+      font-weight: 700;
+    }
+
+    .drop-zone-feedback.error {
+      background: #f8eaea;
+      color: var(--danger) !important;
     }
 
     .settings {
@@ -605,7 +684,7 @@
     <header class="app-header">
       <div>
         <h1>투명 여백 자동 제거</h1>
-        <p class="subtitle" id="subtitle">PNG, WebP처럼 투명도를 가진 이미지를 드래그하면 알파값 기준으로 실제 픽셀 영역만 잘라냅니다.</p>
+        <p class="subtitle" id="subtitle">PNG, WebP처럼 투명도를 가진 이미지를 끌어놓거나 붙여넣으면 알파값 기준으로 실제 픽셀 영역만 잘라냅니다.</p>
       </div>
       <div class="toolbar">
         <label class="file-button" id="fileButton" for="fileInput">이미지 여러 장 선택</label>
@@ -616,10 +695,20 @@
 
     <section class="layout">
       <aside>
-        <div class="drop-zone" id="dropZone" role="region" tabindex="0" aria-labelledby="dropZoneTitle" aria-describedby="dropZoneHelp" aria-keyshortcuts="Enter Space">
-          <div>
-            <strong id="dropZoneTitle">이미지를 여기에 놓기</strong>
-            <span id="dropZoneHelp">여러 장을 한 번에 놓거나, PPT에서 복사한 뒤 여기를 눌러 <kbd>Ctrl+V</kbd> 하세요.</span>
+        <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-labelledby="dropZoneTitle" aria-describedby="dropZoneHelp dropZoneShortcut" aria-keyshortcuts="Enter Space Control+V Meta+V">
+          <div class="drop-zone-content">
+            <div class="clipboard-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="6" y="5" width="12" height="16" rx="2"></rect>
+                <path d="M9 5.5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1.5"></path>
+                <path d="M9 11h6M9 15h6"></path>
+              </svg>
+            </div>
+            <strong id="dropZoneTitle">이미지를 끌어놓거나 붙여넣기</strong>
+            <span id="dropZoneHelp">복사한 이미지가 있다면 이 영역을 클릭하세요.</span>
+            <span class="paste-call-to-action" id="pasteCallToAction">클립보드 이미지 붙여넣기</span>
+            <div class="shortcut-hint" id="dropZoneShortcut"><kbd>Ctrl/⌘ + V</kbd><span>도 바로 가능</span></div>
+            <span class="drop-zone-feedback" id="dropZoneFeedback" role="status" aria-live="polite" hidden></span>
           </div>
         </div>
 
@@ -662,7 +751,7 @@
         </div>
 
         <div class="empty" id="emptyState">
-          <div>업로드 후 파일별 원본과 잘라낸 결과 미리보기가 여기에 표시됩니다.</div>
+          <div>이미지를 불러오면 파일별 원본과 잘라낸 결과 미리보기가 여기에 표시됩니다.</div>
         </div>
 
         <div class="result-list" id="resultList" hidden></div>
@@ -696,6 +785,8 @@
     const fileButton = document.querySelector("#fileButton");
     const dropZoneTitle = document.querySelector("#dropZoneTitle");
     const dropZoneHelp = document.querySelector("#dropZoneHelp");
+    const pasteCallToAction = document.querySelector("#pasteCallToAction");
+    const dropZoneFeedback = document.querySelector("#dropZoneFeedback");
 
     const SETTINGS_KEY = "transparent-image-trimmer-settings";
     const MAX_IMAGE_PIXELS = 50000000;
@@ -719,10 +810,32 @@
     let trimTimer = 0;
     let isTrimming = false;
     let isDownloading = false;
+    let isReadingClipboard = false;
 
     function setStatus(message, isError = false) {
       status.textContent = message;
       status.classList.toggle("error", isError);
+    }
+
+    function getPasteActionLabel() {
+      return isPowerPointReady ? "PPT 그림 붙여넣기" : "클립보드 이미지 붙여넣기";
+    }
+
+    function setDropZoneBusy(isBusy) {
+      dropZone.classList.toggle("pasting", isBusy);
+      pasteCallToAction.textContent = isBusy ? "클립보드 확인 중…" : getPasteActionLabel();
+
+      if (isBusy) {
+        dropZone.setAttribute("aria-busy", "true");
+      } else {
+        dropZone.removeAttribute("aria-busy");
+      }
+    }
+
+    function setDropZoneFeedback(message, isError = false) {
+      dropZoneFeedback.textContent = message;
+      dropZoneFeedback.classList.toggle("error", isError);
+      dropZoneFeedback.hidden = !message;
     }
 
     function restoreSettings() {
@@ -1178,10 +1291,11 @@
 
       if (!files.length) {
         setStatus("이미지 파일만 사용할 수 있습니다.", true);
-        return;
+        return false;
       }
 
       const requestRevision = ++loadRevision;
+      setDropZoneFeedback("");
       trimRevision += 1;
       clearTimeout(trimTimer);
       isTrimming = false;
@@ -1202,7 +1316,7 @@
 
       if (requestRevision !== loadRevision) {
         revokeItems(loadedItems.filter(Boolean));
-        return;
+        return false;
       }
 
       loadedItems.filter(Boolean).forEach((loaded) => {
@@ -1234,13 +1348,14 @@
       if (!imageItems.length) {
         resetApp();
         setStatus("이미지를 읽지 못했습니다.", true);
-        return;
+        return false;
       }
 
       void trimImages();
+      return true;
     }
 
-    function getImageFilesFromClipboard(event) {
+    function getImageFilesFromPasteEvent(event) {
       const items = Array.from(event.clipboardData?.items || []);
       const imageItems = items.filter((item) => item.kind === "file" && item.type.startsWith("image/"));
       const preferredItem = imageItems.find((item) => item.type === "image/png") || imageItems[0];
@@ -1249,16 +1364,92 @@
       return file ? [file] : [];
     }
 
-    function pasteClipboardImages(event) {
-      const files = getImageFilesFromClipboard(event);
+    async function pasteClipboardImages(event) {
+      const files = getImageFilesFromPasteEvent(event);
 
       if (!files.length) {
+        setStatus("붙여넣기는 감지했지만 클립보드에 이미지가 없습니다. 그림을 복사한 뒤 다시 시도해주세요.", true);
+        setDropZoneFeedback("붙여넣기는 됐지만 이미지가 아니에요.", true);
         return;
       }
 
       event.preventDefault();
       event.stopPropagation();
-      loadFiles(files);
+      if (await loadFiles(files)) {
+        setDropZoneFeedback("클립보드 이미지를 붙여넣었습니다.");
+      } else {
+        setDropZoneFeedback("붙여넣은 이미지를 읽지 못했어요.", true);
+      }
+    }
+
+    function getClipboardFileExtension(type) {
+      const subtype = type.split("/")[1]?.split(";")[0]?.toLowerCase() || "png";
+      const normalized = subtype === "jpeg" ? "jpg" : subtype;
+      return /^[a-z0-9]+$/.test(normalized) ? normalized : "png";
+    }
+
+    async function readClipboardImageFiles() {
+      const clipboardItems = await navigator.clipboard.read();
+      const images = [];
+
+      for (const clipboardItem of clipboardItems) {
+        const types = Array.from(clipboardItem.types || []);
+        const imageType = types.find((type) => type === "image/png")
+          || types.find((type) => type.startsWith("image/"));
+
+        if (!imageType) continue;
+
+        const blob = await clipboardItem.getType(imageType);
+        images.push({ blob, type: imageType });
+      }
+
+      return images.map(({ blob, type }, index) => {
+        const number = images.length > 1 ? `-${index + 1}` : "";
+        const name = `clipboard-image${number}.${getClipboardFileExtension(type)}`;
+        return new File([blob], name, { type, lastModified: Date.now() });
+      });
+    }
+
+    async function pasteFromClipboard() {
+      if (isReadingClipboard) return;
+
+      if (!navigator.clipboard?.read) {
+        setStatus("이 브라우저에서는 클릭 붙여넣기를 지원하지 않습니다. 이 영역을 선택한 뒤 Ctrl+V를 눌러주세요.", true);
+        setDropZoneFeedback("버튼 대신 Ctrl/⌘ + V를 눌러주세요.", true);
+        dropZone.focus();
+        return;
+      }
+
+      isReadingClipboard = true;
+      setDropZoneFeedback("");
+      setDropZoneBusy(true);
+
+      try {
+        const files = await readClipboardImageFiles();
+
+        if (!files.length) {
+          setStatus("클립보드에 이미지가 없습니다. 그림을 복사한 뒤 다시 눌러주세요.", true);
+          setDropZoneFeedback("클립보드에 이미지가 없어요.", true);
+          return;
+        }
+
+        if (await loadFiles(files)) {
+          setDropZoneFeedback("클립보드 이미지를 불러왔습니다.");
+        } else {
+          setDropZoneFeedback("클립보드 이미지를 읽지 못했어요.", true);
+        }
+      } catch (error) {
+        const permissionDenied = error?.name === "NotAllowedError" || error?.name === "SecurityError";
+        setStatus(permissionDenied
+          ? "브라우저가 클립보드 확인을 허용하지 않았습니다. 이 영역을 선택한 뒤 Ctrl+V를 눌러주세요."
+          : "클립보드 이미지를 읽지 못했습니다. Ctrl+V로 다시 시도해주세요.", true);
+        setDropZoneFeedback(permissionDenied
+          ? "접근이 막혔어요. Ctrl/⌘ + V를 눌러주세요."
+          : "읽지 못했어요. Ctrl/⌘ + V로 다시 시도해주세요.", true);
+      } finally {
+        isReadingClipboard = false;
+        setDropZoneBusy(false);
+      }
     }
 
     function getDownloadName(fileName, index = 0, totalCount = 1) {
@@ -1717,6 +1908,7 @@
       zipButton.disabled = true;
       insertPptButton.disabled = true;
       updateBatchButtons();
+      setDropZoneFeedback("");
       setStatus("아직 이미지가 없습니다.");
     }
 
@@ -1737,7 +1929,8 @@
           copyButton.textContent = "모두 복사";
           insertPptButton.textContent = "모두 PPT에 넣기";
           dropZoneTitle.textContent = "복사한 이미지 붙여넣기";
-          dropZoneHelp.innerHTML = "PPT에서 그림을 선택하고 <kbd>Ctrl+C</kbd>, 이 영역을 누른 뒤 <kbd>Ctrl+V</kbd>";
+          dropZoneHelp.textContent = "PPT에서 그림을 Ctrl+C로 복사한 뒤 이 영역을 클릭하세요.";
+          pasteCallToAction.textContent = getPasteActionLabel();
 
           if (!imageItems.length) {
             setStatus("PPT에서 복사한 이미지를 붙여넣으면 여백을 제거해 다시 넣을 수 있습니다.");
@@ -1767,10 +1960,12 @@
       loadFiles(event.dataTransfer.files);
     });
 
-    dropZone.addEventListener("keydown", (event) => {
+    dropZone.addEventListener("click", pasteFromClipboard);
+
+    dropZone.addEventListener("keydown", async (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      fileInput.click();
+      await pasteFromClipboard();
     });
 
     document.addEventListener("paste", pasteClipboardImages);

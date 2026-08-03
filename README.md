@@ -2,11 +2,12 @@
 
 Drag and drop one or more transparent images, then export versions cropped to their visible pixels.
 
-Use the hosted app: [Transparent Image Trimmer](https://teemozipsa.github.io/transparent-image-trimmer/)
+Use the hosted app: [Transparent Image Trimmer](https://teemozipsa.com/transparent-image-trimmer/)
 
 ## Features
 
 - Batch image upload by file picker or drag and drop
+- One-click clipboard image paste, with Ctrl/Cmd+V as a fallback
 - Per-image batch progress updates
 - Automatic transparent edge trimming by alpha threshold
 - Optional strong trim mode for ignoring sparse edge pixels

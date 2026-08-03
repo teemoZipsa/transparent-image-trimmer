@@ -6,7 +6,9 @@ import vm from "node:vm";
 function createElementStub() {
   return {
     __clickCount: 0,
+    __focusCount: 0,
     __listeners: new Map(),
+    __attributes: new Map(),
     addEventListener(type, listener) {
       const listeners = this.__listeners.get(type) || [];
       listeners.push(listener);
@@ -25,10 +27,27 @@ function createElementStub() {
     click() {
       this.__clickCount += 1;
     },
+    focus() {
+      this.__focusCount += 1;
+    },
+    removeAttribute(name) {
+      this.__attributes.delete(name);
+    },
     remove() {},
+    setAttribute(name, value) {
+      this.__attributes.set(name, String(value));
+    },
     textContent: "",
     value: ""
   };
+}
+
+class FileStub extends Blob {
+  constructor(parts, name, options = {}) {
+    super(parts, options);
+    this.name = name;
+    this.lastModified = options.lastModified || 0;
+  }
 }
 
 function loadAppFunctions() {
@@ -62,6 +81,7 @@ function loadAppFunctions() {
     Blob,
     DataView,
     Date,
+    File: FileStub,
     Image: class {},
     Int32Array,
     JSON,
@@ -276,13 +296,33 @@ test("ZIP download is enabled only for multiple valid results", () => {
   assert.equal(app.__zipDisabledForSingle, true);
 });
 
-test("drop zone keyboard activation opens the file picker", () => {
+test("clipboard reader prefers PNG and creates a named image file", async () => {
+  app.navigator.clipboard.read = async () => [{
+    types: ["text/html", "image/png"],
+    async getType(type) {
+      return new Blob(["png"], { type });
+    }
+  }];
+
+  const files = await app.readClipboardImageFiles();
+
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, "clipboard-image.png");
+  assert.equal(files[0].type, "image/png");
+});
+
+test("drop zone keyboard activation attempts clipboard paste", async () => {
   const dropZone = app.document.querySelector("#dropZone");
-  const fileInput = app.document.querySelector("#fileInput");
   const keydown = dropZone.__listeners.get("keydown")[0];
   let prevented = false;
+  let clipboardReads = 0;
 
-  keydown({
+  app.navigator.clipboard.read = async () => {
+    clipboardReads += 1;
+    return [];
+  };
+
+  await keydown({
     key: "Enter",
     preventDefault() {
       prevented = true;
@@ -290,7 +330,8 @@ test("drop zone keyboard activation opens the file picker", () => {
   });
 
   assert.equal(prevented, true);
-  assert.equal(fileInput.__clickCount, 1);
+  assert.equal(clipboardReads, 1);
+  assert.match(app.document.querySelector("#status").textContent, /클립보드에 이미지가 없습니다/);
 });
 
 test("PowerPoint placements stay inside the slide and do not overlap", () => {
