@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.log
 addin-catalog/
+
+# Local generated files (regenerable; keep source and test fixtures)
+.DS_Store
+Thumbs.db
+[Dd]esktop.ini
